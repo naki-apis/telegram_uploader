@@ -14,6 +14,7 @@ app = Client(
     api_hash=API_HASH,
 )
 
+
 def human_size(n):
     units = ["B", "KB", "MB", "GB", "TB"]
     f = float(n)
@@ -24,21 +25,23 @@ def human_size(n):
             return f"{f:.2f} {u}"
         f /= 1024
 
+
 def bar(pct):
     filled = int(pct / 5)
     if filled > 20:
         filled = 20
     return "[" + "*" * filled + "-" * (20 - filled) + "]"
 
+
 def parse_telegram_url(url):
     try:
         parsed = urlparse(url)
-        if parsed.netloc != 't.me':
+        if parsed.netloc != "t.me":
             return None, None
-        path_parts = parsed.path.strip('/').split('/')
+        path_parts = parsed.path.strip("/").split("/")
         if len(path_parts) < 2:
             return None, None
-        if path_parts[0] == 'c':
+        if path_parts[0] == "c":
             if len(path_parts) >= 3:
                 chat_id = int(path_parts[1])
                 if chat_id > 0:
@@ -49,13 +52,15 @@ def parse_telegram_url(url):
             username = path_parts[0]
             message_id = int(path_parts[1])
             return f"@{username}", message_id
-    except:
+    except Exception:
         return None, None
+
 
 def sanitize_filename(name):
     name = os.path.basename(name)
     name = re.sub(r'[\\/*?:"<>|]', "_", name)
     return name or "file"
+
 
 def get_media_filename(msg):
     if msg.document and msg.document.file_name:
@@ -81,7 +86,8 @@ def get_media_filename(msg):
         return f"sticker_{msg.id}{ext}"
     return f"file_{msg.id}"
 
-@app.on_message(filters.private & filters.command("dl", prefixes="."))
+
+@app.on_message(filters.me & filters.chat("me") & filters.command("dl", prefixes="."))
 async def download_handler(client: Client, message: Message):
     try:
         args = " ".join(message.command[1:]).strip()
@@ -124,7 +130,7 @@ async def download_handler(client: Client, message: Message):
                     try:
                         chat = await client.get_chat(chat_input)
                         source_chat_id = chat.id
-                    except:
+                    except Exception:
                         print(f"Error: chat not found: {chat_input}")
                         return
         else:
@@ -179,9 +185,18 @@ async def download_handler(client: Client, message: Message):
         print(f"Error: {str(e)[:150]}")
 
 
+def _silence_peer_errors(loop, context):
+    exc = context.get("exception")
+    if isinstance(exc, ValueError) and "Peer id invalid" in str(exc):
+        return
+    loop.default_exception_handler(context)
+
+
 async def _main():
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(_silence_peer_errors)
     await app.start()
-    print("Bot started (download mode)")
+    print("Bot started (download mode, Saved Messages only)")
     await asyncio.Future()
 
 
