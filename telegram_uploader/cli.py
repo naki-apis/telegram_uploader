@@ -37,7 +37,16 @@ def main():
     args = parser.parse_args()
 
     if args.server:
-        run_server()
+        try:
+            run_server()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print()
+            print("Force Exit (Ctrl+C)")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(0)
         return
 
     sources = []
@@ -70,13 +79,14 @@ def main():
 
     api_id, api_hash = ensure_credentials()
 
-    uploader = TelegramUploader(
-        api_id, api_hash,
-        premium=args.premium,
-        zip_option=zip_option,
-    )
-    uploader.start()
+    uploader = None
     try:
+        uploader = TelegramUploader(
+            api_id, api_hash,
+            premium=args.premium,
+            zip_option=zip_option,
+        )
+        uploader.start()
         if args.folder:
             uploader.send_folder(args.folder, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
         else:
@@ -85,15 +95,22 @@ def main():
                     print(f"Error: file does not exist: {s}", file=sys.stderr)
                     sys.exit(1)
             uploader.send_files(sources, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
-    finally:
-        uploader.stop()
-
-    if uploader.errors:
+    except KeyboardInterrupt:
         print()
-        print("Errors:")
-        for path, msg in uploader.errors:
-            print(f"  - {path}: {msg}")
-
-
-if __name__ == "__main__":
-    main()
+        print("Force Exit (Ctrl+C)")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if uploader is not None:
+            try:
+                uploader.stop()
+            except Exception:
+                pass
+        os._exit(0)
+    else:
+        if uploader is not None:
+            uploader.stop()
+        if uploader.errors:
+            print()
+            print("Errors:")
+            for path, msg in uploader.errors:
+                print(f"  - {path}: {msg}")
