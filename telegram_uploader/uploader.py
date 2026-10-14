@@ -111,7 +111,12 @@ def file_kind(path):
 class TelegramUploader:
     def __init__(self, api_id, api_hash, session_name="telegram_uploader",
                  premium=False, zip_option=None):
-        self.client = Client(session_name, api_id=api_id, api_hash=api_hash)
+        self.client = Client(
+            session_name,
+            api_id=api_id,
+            api_hash=api_hash,
+            no_updates=True,
+        )
         self.premium = premium
         self.limit = default_limit(premium)
         self.zip_option = zip_option
