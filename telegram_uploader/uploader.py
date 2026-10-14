@@ -3,7 +3,15 @@ import random
 import subprocess
 import tempfile
 from pyrogram import Client
+from pyrogram.types import InputMediaPhoto, InputMediaVideo
 from .compressor import compress_to_volumes, cleanup_volumes
+
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".heic"}
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"}
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v"}
+
+BATCH_SIZE = 10
 
 
 def human_size(n):
@@ -36,6 +44,32 @@ def get_video_duration(path):
         return 0
 
 
+def get_audio_metadata(path):
+    duration = 0
+    performer = None
+    title = None
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration:format_tags=artist,title",
+             "-of", "default=noprint_wrappers=1", path],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip().splitlines()
+        for line in out:
+            if line.startswith("duration="):
+                try:
+                    duration = int(float(line.split("=", 1)[1]))
+                except ValueError:
+                    pass
+            elif line.startswith("TAG:artist="):
+                performer = line.split("=", 1)[1] or None
+            elif line.startswith("TAG:title="):
+                title = line.split("=", 1)[1] or None
+    except Exception:
+        pass
+    return duration, performer, title
+
+
 def get_random_thumb(path):
     try:
         fd, thumb = tempfile.mkstemp(suffix=".jpg")
@@ -63,6 +97,17 @@ def default_limit(premium=False):
     return 3995 * 1024 * 1024 if premium else 1995 * 1024 * 1024
 
 
+def file_kind(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
 class TelegramUploader:
     def __init__(self, api_id, api_hash, session_name="telegram_uploader",
                  premium=False, zip_option=None):
@@ -81,7 +126,7 @@ class TelegramUploader:
         except Exception:
             pass
 
-    def _progress(self, current, total, prefix="Enviado"):
+    def _progress(self, current, total):
         pct = (current / total) * 100 if total else 0
         line = f"{bar(pct)} {human_size(current)}/{human_size(total)} {pct:.1f}%"
         print("\r" + line, end="", flush=True)
@@ -90,10 +135,10 @@ class TelegramUploader:
         line = f"{bar(100)} {human_size(total)}/{human_size(total)} 100.0%"
         print("\r" + line, flush=True)
 
-    def _send_one(self, path, chat_id, as_video, caption):
+    def _send_one(self, path, chat_id, mode, caption):
         total = os.path.getsize(path)
         print(caption)
-        if as_video:
+        if mode == "video":
             duration = get_video_duration(path)
             thumb = get_random_thumb(path)
             try:
@@ -112,6 +157,24 @@ class TelegramUploader:
                         os.remove(thumb)
                     except OSError:
                         pass
+        elif mode == "image":
+            self.client.send_photo(
+                chat_id=chat_id,
+                photo=path,
+                caption=caption,
+                progress=self._progress,
+            )
+        elif mode == "audio":
+            duration, performer, title = get_audio_metadata(path)
+            self.client.send_audio(
+                chat_id=chat_id,
+                audio=path,
+                caption=caption,
+                duration=duration,
+                performer=performer,
+                title=title,
+                progress=self._progress,
+            )
         else:
             self.client.send_document(
                 chat_id=chat_id,
@@ -119,6 +182,22 @@ class TelegramUploader:
                 caption=caption,
                 progress=self._progress,
             )
+        self._done(total)
+
+    def _send_media_batch(self, paths, chat_id, caption=None):
+        total = sum(os.path.getsize(p) for p in paths if os.path.exists(p))
+        group_caption = caption if caption else f"Batch ({len(paths)} items)"
+        print(group_caption)
+        media = []
+        for i, p in enumerate(paths):
+            kind = file_kind(p)
+            cap = group_caption if i == 0 else None
+            if kind == "video":
+                duration = get_video_duration(p)
+                media.append(InputMediaVideo(media=p, caption=cap, duration=duration, supports_streaming=True))
+            else:
+                media.append(InputMediaPhoto(media=p, caption=cap))
+        self.client.send_media_group(chat_id=chat_id, media=media)
         self._done(total)
 
     def _should_compress(self, path):
@@ -134,7 +213,7 @@ class TelegramUploader:
             level = 0
         return compress_to_volumes(path, volume, level)
 
-    def send_file(self, path, chat_id=None, as_video=False):
+    def send_file(self, path, chat_id=None, mode="document"):
         if chat_id is None:
             chat_id = "me"
         name = os.path.basename(path)
@@ -143,26 +222,43 @@ class TelegramUploader:
                 parts = self._compress(path)
             except Exception as e:
                 self.errors.append((path, str(e)))
-                print(f"Error comprimiendo {path}: {e}")
+                print(f"Error compressing {path}: {e}")
                 return
             try:
                 for part in parts:
                     part_name = os.path.basename(part)
                     try:
-                        self._send_one(part, chat_id, False, part_name)
+                        self._send_one(part, chat_id, "document", part_name)
                     except Exception as e:
                         self.errors.append((part, str(e)))
-                        print(f"Error enviando {part}: {e}")
+                        print(f"Error sending {part}: {e}")
             finally:
                 cleanup_volumes(parts)
         else:
             try:
-                self._send_one(path, chat_id, as_video, name)
+                self._send_one(path, chat_id, mode, name)
             except Exception as e:
                 self.errors.append((path, str(e)))
-                print(f"Error enviando {path}: {e}")
+                print(f"Error sending {path}: {e}")
 
-    def send_folder(self, folder, chat_id=None, as_video=False):
+    def _send_paths(self, paths, chat_id, default_mode, media_batch):
+        if media_batch:
+            batchable = [p for p in paths if file_kind(p) in ("image", "video")]
+            others = [p for p in paths if file_kind(p) not in ("image", "video")]
+            for i in range(0, len(batchable), BATCH_SIZE):
+                chunk = batchable[i:i + BATCH_SIZE]
+                try:
+                    self._send_media_batch(chunk, chat_id)
+                except Exception as e:
+                    self.errors.append((f"batch {i // BATCH_SIZE + 1}", str(e)))
+                    print(f"Error sending batch: {e}")
+            for p in others:
+                self.send_file(p, chat_id=chat_id, mode=default_mode)
+            return
+        for p in paths:
+            self.send_file(p, chat_id=chat_id, mode=default_mode)
+
+    def send_folder(self, folder, chat_id=None, mode="document", media_batch=False):
         if not os.path.isdir(folder):
             raise NotADirectoryError(folder)
         if self.zip_option is not None or self._folder_needs_compress(folder):
@@ -170,21 +266,30 @@ class TelegramUploader:
                 parts = self._compress(folder)
             except Exception as e:
                 self.errors.append((folder, str(e)))
-                print(f"Error comprimiendo {folder}: {e}")
+                print(f"Error compressing {folder}: {e}")
                 return
             try:
                 for part in parts:
                     part_name = os.path.basename(part)
                     try:
-                        self._send_one(part, chat_id, False, part_name)
+                        self._send_one(part, chat_id, "document", part_name)
                     except Exception as e:
                         self.errors.append((part, str(e)))
-                        print(f"Error enviando {part}: {e}")
+                        print(f"Error sending {part}: {e}")
             finally:
                 cleanup_volumes(parts)
             return
-        for f in sorted_files(folder):
-            self.send_file(f, chat_id=chat_id, as_video=as_video)
+        paths = sorted_files(folder)
+        self._send_paths(paths, chat_id, mode, media_batch)
+
+    def send_files(self, paths, chat_id=None, mode="document", media_batch=False):
+        valid = [p for p in paths if os.path.isfile(p)]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        for m in missing:
+            self.errors.append((m, "file does not exist"))
+            print(f"Error: file does not exist: {m}")
+        if valid:
+            self._send_paths(valid, chat_id, mode, media_batch)
 
     def _folder_needs_compress(self, folder):
         for f in sorted_files(folder):
