@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tg-tool = "telegram_uploader.cli:main"
+tg-tool = "tg_tools.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["telegram_uploader*"]
+include = ["tg_tools*"]
