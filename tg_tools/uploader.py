@@ -1,183 +1,328 @@
-import argparse
 import os
-import sys
-from .config import ensure_credentials, clear_config
-from .compressor import parse_zip_option
-from .uploader import TelegramUploader, PROFILE_EXTS
+import random
+import subprocess
+import tempfile
+from pyrogram import Client
+from pyrogram.types import InputMediaPhoto, InputMediaVideo
+from .compressor import compress_to_volumes, cleanup_volumes
+from .config import SESSION_PATH, ensure_session_dir
 
 
-def run_server():
-    from .downloader import run_bot
-    run_bot()
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".heic"}
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"}
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v"}
+PROFILE_EXTS = {".jpg", ".jpeg", ".png"}
+
+BATCH_SIZE = 10
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="telegram-uploader",
-        description="Upload files to Telegram via Pyrogram",
-    )
-    parser.add_argument("path", nargs="?", help="File path")
-    parser.add_argument("-F", "--file", dest="files", action="append", default=None,
-                        metavar="PATH", help="Add a file (repeatable)")
-    parser.add_argument("--folder", metavar="DIR", help="Send every file in DIR (alphabetical order)")
-    parser.add_argument("--chat", metavar="CHAT_ID", default=None, help="Chat ID (default: Saved Messages)")
-    parser.add_argument("--premium", action="store_true", help="Use the higher 3995M limit")
-    parser.add_argument("--zip", metavar="SIZE[/LEVEL]", default=None,
-                        help="Force 7z compression at SIZE (e.g. 100M, 1G, 100M/9). Optional LEVEL 0-9")
+def human_size(n):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    f = float(n)
+    for u in units:
+        if f < 1024 or u == units[-1]:
+            if u == "B":
+                return f"{int(f)} {u}"
+            return f"{f:.2f} {u}"
+        f /= 1024
 
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--video", action="store_true", help="Send as video")
-    mode_group.add_argument("--image", action="store_true", help="Send as photo")
-    mode_group.add_argument("--audio", action="store_true", help="Send as audio")
 
-    parser.add_argument("-IB", "--media-batch", dest="media_batch", action="store_true",
-                        help="Group images and videos in batches of up to 10")
-    parser.add_argument("--server", action="store_true", help="Start the download bot instead of uploading")
-    parser.add_argument("-RC", "--remove_api", action="store_true",
-                        help="Clear stored API credentials and session (empties config.json)")
-    parser.add_argument("-P", "--profile", action="store_true",
-                        help="Set profile photo(s) from the given path, --folder or -F files")
-    parser.add_argument("--delay", type=float, default=0.0, metavar="SEC",
-                        help="Delay between profile photo uploads (default: 0)")
+def bar(pct):
+    filled = int(pct / 5)
+    if filled > 20:
+        filled = 20
+    return "[" + "*" * filled + "-" * (20 - filled) + "]"
 
-    args = parser.parse_args()
 
-    if args.remove_api:
-        removed = clear_config()
-        print("API credentials removed (config.json emptied).")
-        if removed:
-            print("Sessions removed:")
-            for p in removed:
-                print(f"  - {p}")
-        else:
-            print("No session files found.")
-        return
-
-    if args.server:
-        try:
-            run_server()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            print()
-            print("Force Exit (Ctrl+C)")
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(0)
-        return
-
-    sources = []
-    if args.path:
-        sources.append(args.path)
-    if args.files:
-        sources.extend(args.files)
-
-    if args.folder and sources:
-        parser.error("Use --folder or files, not both")
-
-    if args.profile:
-        if args.folder:
-            profile_paths = sorted(
-                os.path.join(args.folder, e)
-                for e in os.listdir(args.folder)
-                if os.path.isfile(os.path.join(args.folder, e))
-                and os.path.splitext(e)[1].lower() in PROFILE_EXTS
-            )
-        elif sources:
-            profile_paths = [s for s in sources if os.path.splitext(s)[1].lower() in PROFILE_EXTS]
-        else:
-            profile_paths = sorted(
-                os.path.join(os.getcwd(), e)
-                for e in os.listdir(os.getcwd())
-                if os.path.isfile(os.path.join(os.getcwd(), e))
-                and os.path.splitext(e)[1].lower() in PROFILE_EXTS
-            )
-
-        if not profile_paths:
-            print("No valid profile images found (.jpg/.jpeg/.png).", file=sys.stderr)
-            sys.exit(1)
-
-        api_id, api_hash = ensure_credentials()
-        uploader = None
-        try:
-            uploader = TelegramUploader(api_id, api_hash)
-            uploader.start()
-            uploader.set_profile_photos(profile_paths, delay=args.delay)
-        except KeyboardInterrupt:
-            print()
-            print("Force Exit (Ctrl+C)")
-            sys.stdout.flush()
-            sys.stderr.flush()
-            if uploader is not None:
-                try:
-                    uploader.stop()
-                except Exception:
-                    pass
-            os._exit(0)
-        else:
-            if uploader is not None:
-                uploader.stop()
-            if uploader.errors:
-                print()
-                print("Errors:")
-                for path, msg in uploader.errors:
-                    print(f"  - {path}: {msg}")
-        return
-
-    if not args.folder and not sources:
-        parser.error("You must provide a path, -F/--file or --folder")
-
-    if args.video:
-        mode = "video"
-    elif args.image:
-        mode = "image"
-    elif args.audio:
-        mode = "audio"
-    else:
-        mode = "document"
-
-    zip_option = None
-    if args.zip is not None:
-        try:
-            zip_option = parse_zip_option(args.zip, premium=args.premium)
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    api_id, api_hash = ensure_credentials()
-
-    uploader = None
+def get_video_duration(path):
     try:
-        uploader = TelegramUploader(
-            api_id, api_hash,
-            premium=args.premium,
-            zip_option=zip_option,
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return int(float(out))
+    except Exception:
+        return 0
+
+
+def get_audio_metadata(path):
+    duration = 0
+    performer = None
+    title = None
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration:format_tags=artist,title",
+             "-of", "default=noprint_wrappers=1", path],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip().splitlines()
+        for line in out:
+            if line.startswith("duration="):
+                try:
+                    duration = int(float(line.split("=", 1)[1]))
+                except ValueError:
+                    pass
+            elif line.startswith("TAG:artist="):
+                performer = line.split("=", 1)[1] or None
+            elif line.startswith("TAG:title="):
+                title = line.split("=", 1)[1] or None
+    except Exception:
+        pass
+    return duration, performer, title
+
+
+def get_random_thumb(path):
+    try:
+        fd, thumb = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        t = random.uniform(0, 5)
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(t), "-i", path, "-vframes", "1",
+             "-vf", "scale=320:-1", thumb],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
         )
-        uploader.start()
-        if args.folder:
-            uploader.send_folder(args.folder, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
-        else:
-            for s in sources:
-                if not os.path.isfile(s):
-                    print(f"Error: file does not exist: {s}", file=sys.stderr)
-                    sys.exit(1)
-            uploader.send_files(sources, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
-    except KeyboardInterrupt:
-        print()
-        print("Force Exit (Ctrl+C)")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        if uploader is not None:
+        return thumb
+    except Exception:
+        return None
+
+
+def sorted_files(folder):
+    entries = sorted(os.listdir(folder))
+    return [
+        os.path.join(folder, e) for e in entries
+        if os.path.isfile(os.path.join(folder, e))
+    ]
+
+
+def default_limit(premium=False):
+    return 3995 * 1024 * 1024 if premium else 1995 * 1024 * 1024
+
+
+def file_kind(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
+class TelegramUploader:
+    def __init__(self, api_id, api_hash, session_name=None,
+                 premium=False, zip_option=None):
+        if session_name is None:
+            session_name = SESSION_PATH
+        ensure_session_dir()
+        self.client = Client(
+            session_name,
+            api_id=api_id,
+            api_hash=api_hash,
+            no_updates=True,
+        )
+        self.premium = premium
+        self.limit = default_limit(premium)
+        self.zip_option = zip_option
+        self.errors = []
+
+    def start(self):
+        self.client.start()
+
+    def stop(self):
+        try:
+            self.client.stop()
+        except Exception:
+            pass
+
+    def _progress(self, current, total):
+        pct = (current / total) * 100 if total else 0
+        line = f"{bar(pct)} {human_size(current)}/{human_size(total)} {pct:.1f}%"
+        print("\r" + line, end="", flush=True)
+
+    def _done(self, total):
+        line = f"{bar(100)} {human_size(total)}/{human_size(total)} 100.0%"
+        print("\r" + line, flush=True)
+
+    def _send_one(self, path, chat_id, mode, caption):
+        total = os.path.getsize(path)
+        print(caption)
+        if mode == "video":
+            duration = get_video_duration(path)
+            thumb = get_random_thumb(path)
             try:
-                uploader.stop()
-            except Exception:
-                pass
-        os._exit(0)
-    else:
-        if uploader is not None:
-            uploader.stop()
-        if uploader.errors:
-            print()
-            print("Errors:")
-            for path, msg in uploader.errors:
-                print(f"  - {path}: {msg}")
+                self.client.send_video(
+                    chat_id=chat_id,
+                    video=path,
+                    duration=duration,
+                    thumb=thumb,
+                    caption=caption,
+                    supports_streaming=True,
+                    progress=self._progress,
+                )
+            finally:
+                if thumb and os.path.exists(thumb):
+                    try:
+                        os.remove(thumb)
+                    except OSError:
+                        pass
+        elif mode == "image":
+            self.client.send_photo(
+                chat_id=chat_id,
+                photo=path,
+                caption=caption,
+                progress=self._progress,
+            )
+        elif mode == "audio":
+            duration, performer, title = get_audio_metadata(path)
+            self.client.send_audio(
+                chat_id=chat_id,
+                audio=path,
+                caption=caption,
+                duration=duration,
+                performer=performer,
+                title=title,
+                progress=self._progress,
+            )
+        else:
+            self.client.send_document(
+                chat_id=chat_id,
+                document=path,
+                caption=caption,
+                progress=self._progress,
+            )
+        self._done(total)
+
+    def _send_media_batch(self, paths, chat_id, caption=None):
+        total = sum(os.path.getsize(p) for p in paths if os.path.exists(p))
+        group_caption = caption if caption else f"Batch ({len(paths)} items)"
+        print(group_caption)
+        media = []
+        for i, p in enumerate(paths):
+            kind = file_kind(p)
+            cap = group_caption if i == 0 else None
+            if kind == "video":
+                duration = get_video_duration(p)
+                media.append(InputMediaVideo(media=p, caption=cap, duration=duration, supports_streaming=True))
+            else:
+                media.append(InputMediaPhoto(media=p, caption=cap))
+        self.client.send_media_group(chat_id=chat_id, media=media)
+        self._done(total)
+
+    def _should_compress(self, path):
+        if self.zip_option is not None:
+            return True
+        return os.path.getsize(path) > self.limit
+
+    def _compress(self, path):
+        if self.zip_option is not None:
+            volume, level = self.zip_option
+        else:
+            volume = self.limit
+            level = 0
+        return compress_to_volumes(path, volume, level)
+
+    def send_file(self, path, chat_id=None, mode="document"):
+        if chat_id is None:
+            chat_id = "me"
+        name = os.path.basename(path)
+        if self._should_compress(path):
+            try:
+                parts = self._compress(path)
+            except Exception as e:
+                self.errors.append((path, str(e)))
+                print(f"Error compressing {path}: {e}")
+                return
+            try:
+                for part in parts:
+                    part_name = os.path.basename(part)
+                    try:
+                        self._send_one(part, chat_id, "document", part_name)
+                    except Exception as e:
+                        self.errors.append((part, str(e)))
+                        print(f"Error sending {part}: {e}")
+            finally:
+                cleanup_volumes(parts)
+        else:
+            try:
+                self._send_one(path, chat_id, mode, name)
+            except Exception as e:
+                self.errors.append((path, str(e)))
+                print(f"Error sending {path}: {e}")
+
+    def _send_paths(self, paths, chat_id, default_mode, media_batch):
+        if media_batch:
+            batchable = [p for p in paths if file_kind(p) in ("image", "video")]
+            others = [p for p in paths if file_kind(p) not in ("image", "video")]
+            for i in range(0, len(batchable), BATCH_SIZE):
+                chunk = batchable[i:i + BATCH_SIZE]
+                try:
+                    self._send_media_batch(chunk, chat_id)
+                except Exception as e:
+                    self.errors.append((f"batch {i // BATCH_SIZE + 1}", str(e)))
+                    print(f"Error sending batch: {e}")
+            for p in others:
+                self.send_file(p, chat_id=chat_id, mode=default_mode)
+            return
+        for p in paths:
+            self.send_file(p, chat_id=chat_id, mode=default_mode)
+
+    def send_folder(self, folder, chat_id=None, mode="document", media_batch=False):
+        if not os.path.isdir(folder):
+            raise NotADirectoryError(folder)
+        if self.zip_option is not None or self._folder_needs_compress(folder):
+            try:
+                parts = self._compress(folder)
+            except Exception as e:
+                self.errors.append((folder, str(e)))
+                print(f"Error compressing {folder}: {e}")
+                return
+            try:
+                for part in parts:
+                    part_name = os.path.basename(part)
+                    try:
+                        self._send_one(part, chat_id, "document", part_name)
+                    except Exception as e:
+                        self.errors.append((part, str(e)))
+                        print(f"Error sending {part}: {e}")
+            finally:
+                cleanup_volumes(parts)
+            return
+        paths = sorted_files(folder)
+        self._send_paths(paths, chat_id, mode, media_batch)
+
+    def send_files(self, paths, chat_id=None, mode="document", media_batch=False):
+        valid = [p for p in paths if os.path.isfile(p)]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        for m in missing:
+            self.errors.append((m, "file does not exist"))
+            print(f"Error: file does not exist: {m}")
+        if valid:
+            self._send_paths(valid, chat_id, mode, media_batch)
+
+    def set_profile_photo(self, path):
+        self.client.set_profile_photo(photo=path)
+
+    def set_profile_photos(self, paths, delay=0.0):
+        import time
+        valid = [p for p in paths if os.path.isfile(p)]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        for m in missing:
+            self.errors.append((m, "file does not exist"))
+            print(f"Error: file does not exist: {m}")
+        for p in valid:
+            try:
+                self.set_profile_photo(p)
+                print(f"Profile photo set: {os.path.basename(p)}")
+            except Exception as e:
+                self.errors.append((p, str(e)))
+                print(f"Error setting profile photo {p}: {e}")
+            if delay > 0:
+                time.sleep(delay)
+
+    def _folder_needs_compress(self, folder):
+        for f in sorted_files(folder):
+            if os.path.getsize(f) > self.limit:
+                return True
+        return False
