@@ -1,7 +1,7 @@
 import argparse
 import os
 import sys
-from .config import ensure_credentials
+from .config import ensure_credentials, clear_config
 from .compressor import parse_zip_option
 from .uploader import TelegramUploader
 
@@ -33,8 +33,21 @@ def main():
     parser.add_argument("-IB", "--media-batch", dest="media_batch", action="store_true",
                         help="Group images and videos in batches of up to 10")
     parser.add_argument("--server", action="store_true", help="Start the download bot instead of uploading")
+    parser.add_argument("-RC", "--remove_api", action="store_true",
+                        help="Clear stored API credentials and session (empties config.json)")
 
     args = parser.parse_args()
+
+    if args.remove_api:
+        removed = clear_config()
+        print("API credentials removed (config.json emptied).")
+        if removed:
+            print("Sessions removed:")
+            for p in removed:
+                print(f"  - {p}")
+        else:
+            print("No session files found.")
+        return
 
     if args.server:
         try:
