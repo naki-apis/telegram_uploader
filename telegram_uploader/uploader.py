@@ -5,6 +5,7 @@ import tempfile
 from pyrogram import Client
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
 from .compressor import compress_to_volumes, cleanup_volumes
+from .config import SESSION_PATH, ensure_session_dir
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".heic"}
@@ -109,8 +110,11 @@ def file_kind(path):
 
 
 class TelegramUploader:
-    def __init__(self, api_id, api_hash, session_name="telegram_uploader",
+    def __init__(self, api_id, api_hash, session_name=None,
                  premium=False, zip_option=None):
+        if session_name is None:
+            session_name = SESSION_PATH
+        ensure_session_dir()
         self.client = Client(
             session_name,
             api_id=api_id,
