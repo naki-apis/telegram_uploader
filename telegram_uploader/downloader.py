@@ -4,12 +4,13 @@ import asyncio
 import os
 import re
 from urllib.parse import urlparse
-from .config import ensure_credentials
+from .config import ensure_credentials, SESSION_PATH, ensure_session_dir
 
 API_ID, API_HASH = ensure_credentials()
+ensure_session_dir()
 
 app = Client(
-    "my_bot",
+    SESSION_PATH,
     api_id=API_ID,
     api_hash=API_HASH,
 )
