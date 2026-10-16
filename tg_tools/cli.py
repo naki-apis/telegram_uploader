@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--premium", action="store_true", help="Use the higher 3995M limit")
     parser.add_argument("--zip", metavar="SIZE[/LEVEL]", default=None,
                         help="Force 7z compression at SIZE (e.g. 100M, 1G, 100M/9). Optional LEVEL 0-9")
+    parser.add_argument("-T", "--thumb", metavar="PATH", default=None,
+                        help="Custom thumbnail image for documents (jpg/png)")
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--video", action="store_true", help="Send as video")
@@ -65,6 +67,17 @@ def main():
             sys.stderr.flush()
             os._exit(0)
         return
+
+    thumb_path = None
+    if args.thumb:
+        if not os.path.isfile(args.thumb):
+            print(f"Error: thumbnail file does not exist: {args.thumb}", file=sys.stderr)
+            sys.exit(1)
+        ext = os.path.splitext(args.thumb)[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png"):
+            print(f"Error: thumbnail must be .jpg/.jpeg/.png: {args.thumb}", file=sys.stderr)
+            sys.exit(1)
+        thumb_path = args.thumb
 
     sources = []
     if args.path:
@@ -152,6 +165,7 @@ def main():
             api_id, api_hash,
             premium=args.premium,
             zip_option=zip_option,
+            thumb_path=thumb_path,
         )
         uploader.start()
         if args.folder:
