@@ -88,59 +88,100 @@ def get_media_filename(msg):
     return f"file_{msg.id}"
 
 
+async def resolve_source(message, command_name):
+    args = " ".join(message.command[1:]).strip()
+    source_chat_id = None
+    msg_id = None
+    custom_name = None
+
+    if args.startswith("https://t.me/"):
+        source_chat_id, msg_id = parse_telegram_url(args)
+        if not source_chat_id or not msg_id:
+            print("Error: invalid URL")
+            return None, None, None
+    elif len(message.command) == 2 and message.reply_to_message:
+        source_chat_id = message.chat.id
+        msg_id = message.reply_to_message.id
+        custom_name = sanitize_filename(message.command[1])
+    elif len(message.command) == 1 and message.reply_to_message:
+        source_chat_id = message.chat.id
+        msg_id = message.reply_to_message.id
+    elif len(message.command) == 2:
+        source_chat_id = message.chat.id
+        try:
+            msg_id = int(message.command[1])
+        except ValueError:
+            print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
+            return None, None, None
+    elif len(message.command) == 3:
+        chat_input = message.command[1]
+        try:
+            msg_id = int(message.command[2])
+        except ValueError:
+            print("Error: invalid msg_id")
+            return None, None, None
+        if chat_input.startswith("@"):
+            source_chat_id = chat_input
+        else:
+            try:
+                source_chat_id = int(chat_input)
+            except ValueError:
+                try:
+                    chat = await message._client.get_chat(chat_input)
+                    source_chat_id = chat.id
+                except Exception:
+                    print(f"Error: chat not found: {chat_input}")
+                    return None, None, None
+    else:
+        print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
+        return None, None, None
+
+    return source_chat_id, msg_id, custom_name
+
+
+async def download_single(client, target_msg, custom_name=None):
+    if custom_name:
+        filename = custom_name
+    else:
+        filename = sanitize_filename(get_media_filename(target_msg))
+
+    file_path = os.path.join(os.getcwd(), filename)
+    last_edit = {"t": 0.0}
+
+    async def progress(current, total):
+        now = asyncio.get_event_loop().time()
+        if now - last_edit["t"] < 2.0 and current < total:
+            return
+        last_edit["t"] = now
+        pct = (current / total) * 100 if total else 0
+        line = f"Downloading {bar(pct)} {human_size(current)}/{human_size(total)} {pct:.1f}% {filename}"
+        print("\r" + line, end="", flush=True)
+
+    print(f"Downloading {filename}")
+    file_path = await target_msg.download(
+        file_name=file_path,
+        progress=progress,
+    )
+    size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    print("\r" + f"Downloading {bar(100)} {human_size(size)}/{human_size(size)} 100.0% {filename}", flush=True)
+    print(f"Saved: {file_path}")
+
+
+async def resolve_chat(client, source_chat_id):
+    if isinstance(source_chat_id, str) and source_chat_id.startswith("@"):
+        chat = await client.get_chat(source_chat_id)
+        return chat.id
+    return source_chat_id
+
+
 @app.on_message(filters.me & filters.chat("me") & filters.command("dl", prefixes="."))
 async def download_handler(client: Client, message: Message):
     try:
-        args = " ".join(message.command[1:]).strip()
-        source_chat_id = None
-        msg_id = None
-        custom_name = None
-
-        if args.startswith("https://t.me/"):
-            source_chat_id, msg_id = parse_telegram_url(args)
-            if not source_chat_id or not msg_id:
-                print("Error: invalid URL")
-                return
-        elif len(message.command) == 2 and message.reply_to_message:
-            source_chat_id = message.chat.id
-            msg_id = message.reply_to_message.id
-            custom_name = sanitize_filename(message.command[1])
-        elif len(message.command) == 1 and message.reply_to_message:
-            source_chat_id = message.chat.id
-            msg_id = message.reply_to_message.id
-        elif len(message.command) == 2:
-            source_chat_id = message.chat.id
-            try:
-                msg_id = int(message.command[1])
-            except ValueError:
-                print("Usage: .dl (reply), .dl name.ext (reply), .dl https://t.me/user/123, .dl @user 123 or .dl -100123 456")
-                return
-        elif len(message.command) == 3:
-            chat_input = message.command[1]
-            try:
-                msg_id = int(message.command[2])
-            except ValueError:
-                print("Error: invalid msg_id")
-                return
-            if chat_input.startswith("@"):
-                source_chat_id = chat_input
-            else:
-                try:
-                    source_chat_id = int(chat_input)
-                except ValueError:
-                    try:
-                        chat = await client.get_chat(chat_input)
-                        source_chat_id = chat.id
-                    except Exception:
-                        print(f"Error: chat not found: {chat_input}")
-                        return
-        else:
-            print("Usage: .dl (reply), .dl name.ext (reply), .dl https://t.me/user/123, .dl @user 123 or .dl -100123 456")
+        source_chat_id, msg_id, custom_name = await resolve_source(message, ".dl")
+        if source_chat_id is None or msg_id is None:
             return
 
-        if isinstance(source_chat_id, str) and source_chat_id.startswith("@"):
-            chat = await client.get_chat(source_chat_id)
-            source_chat_id = chat.id
+        source_chat_id = await resolve_chat(client, source_chat_id)
 
         try:
             target_msg = await client.get_messages(source_chat_id, msg_id)
@@ -156,31 +197,60 @@ async def download_handler(client: Client, message: Message):
             print("Error: no downloadable media in message")
             return
 
-        if custom_name:
-            filename = custom_name
-        else:
-            filename = sanitize_filename(get_media_filename(target_msg))
+        await download_single(client, target_msg, custom_name)
 
-        file_path = os.path.join(os.getcwd(), filename)
-        last_edit = {"t": 0.0}
+    except Exception as e:
+        print(f"Error: {str(e)[:150]}")
 
-        async def progress(current, total):
-            now = asyncio.get_event_loop().time()
-            if now - last_edit["t"] < 2.0 and current < total:
-                return
-            last_edit["t"] = now
-            pct = (current / total) * 100 if total else 0
-            line = f"Downloading {bar(pct)} {human_size(current)}/{human_size(total)} {pct:.1f}% {filename}"
-            print("\r" + line, end="", flush=True)
 
-        print(f"Downloading {filename}")
-        file_path = await target_msg.download(
-            file_name=file_path,
-            progress=progress,
-        )
-        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-        print("\r" + f"Downloading {bar(100)} {human_size(size)}/{human_size(size)} 100.0% {filename}", flush=True)
-        print(f"Saved: {file_path}")
+@app.on_message(filters.me & filters.chat("me") & filters.command("dlg", prefixes="."))
+async def download_group_handler(client: Client, message: Message):
+    try:
+        source_chat_id, msg_id, custom_name = await resolve_source(message, ".dlg")
+        if source_chat_id is None or msg_id is None:
+            return
+
+        source_chat_id = await resolve_chat(client, source_chat_id)
+
+        try:
+            target_msg = await client.get_messages(source_chat_id, msg_id)
+        except Exception as e:
+            print(f"Error: could not fetch message: {str(e)[:150]}")
+            return
+
+        if not target_msg or target_msg.empty:
+            print("Error: message not found")
+            return
+
+        if not target_msg.media:
+            print("Error: no downloadable media in message")
+            return
+
+        if not target_msg.media_group_id:
+            print("Info: message is not part of a media group, downloading single")
+            await download_single(client, target_msg, custom_name)
+            return
+
+        try:
+            media_group = await client.get_media_group(source_chat_id, msg_id)
+        except Exception as e:
+            print(f"Error: could not fetch media group: {str(e)[:150]}")
+            return
+
+        print(f"Media group detected: {len(media_group)} items")
+        for idx, single_msg in enumerate(media_group, start=1):
+            if not single_msg.media:
+                continue
+            name = None
+            if custom_name and len(media_group) == 1:
+                name = custom_name
+            elif custom_name:
+                base, ext = os.path.splitext(custom_name)
+                name = f"{base}_{idx}{ext}"
+            try:
+                await download_single(client, single_msg, name)
+            except Exception as e:
+                print(f"Error downloading item {idx}: {str(e)[:150]}")
 
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
