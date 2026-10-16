@@ -112,7 +112,7 @@ def file_kind(path):
 
 class TelegramUploader:
     def __init__(self, api_id, api_hash, session_name=None,
-                 premium=False, zip_option=None):
+                 premium=False, zip_option=None, thumb_path=None):
         if session_name is None:
             session_name = SESSION_PATH
         ensure_session_dir()
@@ -125,6 +125,7 @@ class TelegramUploader:
         self.premium = premium
         self.limit = default_limit(premium)
         self.zip_option = zip_option
+        self.thumb_path = thumb_path
         self.errors = []
 
     def start(self):
@@ -145,9 +146,17 @@ class TelegramUploader:
         line = f"{bar(100)} {human_size(total)}/{human_size(total)} 100.0%"
         print("\r" + line, flush=True)
 
+    def _custom_thumb(self, mode=None):
+        if mode in ("image", "video"):
+            return None
+        if self.thumb_path and os.path.isfile(self.thumb_path):
+            return self.thumb_path
+        return None
+
     def _send_one(self, path, chat_id, mode, caption):
         total = os.path.getsize(path)
         print(caption)
+        custom_thumb = self._custom_thumb(mode)
         if mode == "video":
             duration = get_video_duration(path)
             thumb = get_random_thumb(path)
@@ -176,22 +185,28 @@ class TelegramUploader:
             )
         elif mode == "audio":
             duration, performer, title = get_audio_metadata(path)
-            self.client.send_audio(
-                chat_id=chat_id,
-                audio=path,
-                caption=caption,
-                duration=duration,
-                performer=performer,
-                title=title,
-                progress=self._progress,
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "audio": path,
+                "caption": caption,
+                "duration": duration,
+                "performer": performer,
+                "title": title,
+                "progress": self._progress,
+            }
+            if custom_thumb:
+                kwargs["thumb"] = custom_thumb
+            self.client.send_audio(**kwargs)
         else:
-            self.client.send_document(
-                chat_id=chat_id,
-                document=path,
-                caption=caption,
-                progress=self._progress,
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "document": path,
+                "caption": caption,
+                "progress": self._progress,
+            }
+            if custom_thumb:
+                kwargs["thumb"] = custom_thumb
+            self.client.send_document(**kwargs)
         self._done(total)
 
     def _send_media_batch(self, paths, chat_id, caption=None):
