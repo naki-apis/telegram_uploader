@@ -174,7 +174,7 @@ async def resolve_chat(client, source_chat_id):
     return source_chat_id
 
 
-@app.on_message(filters.me & filters.chat("me") & filters.command("dl", prefixes="."))
+@app.on_message(filters.private or filters.bot or filters.me & filters.command("dl", prefixes="."))
 async def download_handler(client: Client, message: Message):
     try:
         source_chat_id, msg_id, custom_name = await resolve_source(message, ".dl")
@@ -203,7 +203,7 @@ async def download_handler(client: Client, message: Message):
         print(f"Error: {str(e)[:150]}")
 
 
-@app.on_message(filters.me & filters.chat("me") & filters.command("dlg", prefixes="."))
+@app.on_message(filters.private or filters.bot or filters.me & filters.command("dlg", prefixes="."))
 async def download_group_handler(client: Client, message: Message):
     try:
         source_chat_id, msg_id, custom_name = await resolve_source(message, ".dlg")
