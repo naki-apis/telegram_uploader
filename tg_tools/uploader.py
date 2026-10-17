@@ -15,6 +15,9 @@ PROFILE_EXTS = {".jpg", ".jpeg", ".png"}
 
 BATCH_SIZE = 10
 
+THUMB_MAX_BYTES = 200 * 1024
+THUMB_MAX_DIM = 320
+
 
 def human_size(n):
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -87,6 +90,56 @@ def get_random_thumb(path):
         return None
 
 
+def _thumb_is_valid(path):
+    try:
+        if os.path.getsize(path) > THUMB_MAX_BYTES:
+            return False
+    except OSError:
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".jpg", ".jpeg"):
+        return False
+    return True
+
+
+def _make_thumb_compatible(path):
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        fd, out = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))
+            img.save(out, format="JPEG", quality=80)
+        if os.path.getsize(out) > THUMB_MAX_BYTES:
+            with Image.open(out) as img:
+                img = img.convert("RGB")
+                for quality in (60, 40, 20, 10):
+                    img.save(out, format="JPEG", quality=quality)
+                    if os.path.getsize(out) <= THUMB_MAX_BYTES:
+                        break
+        if os.path.getsize(out) > THUMB_MAX_BYTES:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+            return None
+        return out
+    except Exception:
+        return None
+
+
+def prepare_thumb(path):
+    if not path or not os.path.isfile(path):
+        return None
+    if _thumb_is_valid(path):
+        return path
+    return _make_thumb_compatible(path)
+
+
 def sorted_files(folder):
     entries = sorted(os.listdir(folder))
     return [
@@ -157,6 +210,11 @@ class TelegramUploader:
         total = os.path.getsize(path)
         print(caption)
         custom_thumb = self._custom_thumb(mode)
+        generated_thumb = None
+        if custom_thumb:
+            custom_thumb = prepare_thumb(custom_thumb)
+            if custom_thumb and not os.path.isfile(custom_thumb):
+                custom_thumb = None
         if mode == "video":
             duration = get_video_duration(path)
             thumb = get_random_thumb(path)
