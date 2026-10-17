@@ -88,10 +88,22 @@ def get_media_filename(msg):
     return f"file_{msg.id}"
 
 
+def _raw_args(message, command_name):
+    text = message.text or message.caption or ""
+    prefix = "." + command_name
+    if not text.startswith(prefix):
+        return None
+    rest = text[len(prefix):]
+    if rest and not rest[0].isspace():
+        return None
+    return rest.strip()
+
+
 async def resolve_source(message, command_name):
-    if not message.command:
+    args = _raw_args(message, command_name)
+    if args is None:
         return None, None, None
-    args = " ".join(message.command[1:]).strip()
+
     source_chat_id = None
     msg_id = None
     custom_name = None
@@ -100,37 +112,42 @@ async def resolve_source(message, command_name):
         source_chat_id, msg_id = parse_telegram_url(args)
         if not source_chat_id or not msg_id:
             return None, None, None
-    elif len(message.command) == 2 and message.reply_to_message:
+    elif args and message.reply_to_message:
         source_chat_id = message.chat.id
         msg_id = message.reply_to_message.id
-        custom_name = sanitize_filename(message.command[1])
-    elif len(message.command) == 1 and message.reply_to_message:
+        custom_name = sanitize_filename(args)
+    elif not args and message.reply_to_message:
         source_chat_id = message.chat.id
         msg_id = message.reply_to_message.id
-    elif len(message.command) == 2:
-        source_chat_id = message.chat.id
-        try:
-            msg_id = int(message.command[1])
-        except ValueError:
+    elif args and not message.reply_to_message:
+        parts = args.split()
+        if len(parts) == 1:
+            source_chat_id = message.chat.id
+            try:
+                msg_id = int(parts[0])
+            except ValueError:
+                print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
+                return None, None, None
+        elif len(parts) == 2:
+            chat_input = parts[0]
+            try:
+                msg_id = int(parts[1])
+            except ValueError:
+                return None, None, None
+            if chat_input.startswith("@"):
+                source_chat_id = chat_input
+            else:
+                try:
+                    source_chat_id = int(chat_input)
+                except ValueError:
+                    try:
+                        chat = await message._client.get_chat(chat_input)
+                        source_chat_id = chat.id
+                    except Exception:
+                        return None, None, None
+        else:
             print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
             return None, None, None
-    elif len(message.command) == 3:
-        chat_input = message.command[1]
-        try:
-            msg_id = int(message.command[2])
-        except ValueError:
-            return None, None, None
-        if chat_input.startswith("@"):
-            source_chat_id = chat_input
-        else:
-            try:
-                source_chat_id = int(chat_input)
-            except ValueError:
-                try:
-                    chat = await message._client.get_chat(chat_input)
-                    source_chat_id = chat.id
-                except Exception:
-                    return None, None, None
     else:
         print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
         return None, None, None
@@ -212,7 +229,7 @@ async def download_handler(client: Client, message: Message):
     await _react(client, message, "🤔")
     success = False
     try:
-        source_chat_id, msg_id, custom_name = await resolve_source(message, ".dl")
+        source_chat_id, msg_id, custom_name = await resolve_source(message, "dl")
         if source_chat_id is None or msg_id is None:
             return
 
@@ -248,7 +265,7 @@ async def download_group_handler(client: Client, message: Message):
     await _react(client, message, "🤔")
     success = False
     try:
-        source_chat_id, msg_id, custom_name = await resolve_source(message, ".dlg")
+        source_chat_id, msg_id, custom_name = await resolve_source(message, "dlg")
         if source_chat_id is None or msg_id is None:
             return
 
