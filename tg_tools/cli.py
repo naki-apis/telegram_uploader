@@ -14,90 +14,118 @@ def run_server():
 def main():
     parser = argparse.ArgumentParser(
         prog="tg-tool",
-        description="Sube archivos a Telegram usando Pyrogram. Soporta archivos individuales, carpetas completas, compresión automática y modo bot de descarga.",
+        usage="tg-tool [-h] [--premium] [--chat CHAT_ID] <command> ...",
+        description="CLI para subir archivos a Telegram con Pyrogram. Soporta archivos individuales, carpetas, compresión automática y bot de descarga.",
         epilog="Ejemplos:\n"
-               "  tg-tool archivo.zip\n"
-               "  tg-tool --folder ./fotos -IB\n"
+               "  tg-tool upload archivo.zip\n"
+               "  tg-tool upload -F a.mp4 -F b.mp4 --video\n"
+               "  tg-tool folder ./fotos -IB\n"
+               "  tg-tool upload archivo.pdf -T preview.jpg --chat @miusuario\n"
+               "  tg-tool profile -P ./avatar.png\n"
                "  tg-tool server\n"
-               "  tg-tool archivo.pdf -T preview.jpg",
+               "  tg-tool logout",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser.add_argument(
-        "path", nargs="?", default=None,
-        help="Ruta del archivo a subir, o 'server' para iniciar el bot de descarga. "
-             "Si se omite, usa -F/--file o --folder."
+        "--premium", action="store_true",
+        help="Usa el límite de 3995MB para cuentas Premium (por defecto 1995MB)"
     )
-
-    parser.add_argument(
-        "-F", "--file", dest="files", action="append", default=None,
-        metavar="RUTA",
-        help="Añade un archivo a la lista de subida (repetible). No compatible con --folder."
-    )
-
-    parser.add_argument(
-        "--folder", metavar="DIR",
-        help="Sube todos los archivos del directorio (orden alfabético). No compatible con archivos individuales."
-    )
-
     parser.add_argument(
         "--chat", metavar="CHAT_ID", default=None,
-        help="ID del chat destino o @usuario. Por defecto Mensajes Guardados (me)."
+        help="ID del chat destino o @usuario (por defecto: Mensajes Guardados)"
     )
 
-    parser.add_argument(
-        "--premium", action="store_true",
-        help="Usa el límite de 3995MB para cuentas Premium (por defecto 1995MB)."
-    )
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
-    parser.add_argument(
+    p_upload = subparsers.add_parser(
+        "upload", aliases=["u"],
+        help="Sube uno o varios archivos",
+        description="Sube archivos individuales. Usa -F repetidamente para varios.",
+    )
+    p_upload.add_argument("path", nargs="?", default=None, help="Ruta del archivo a subir")
+    p_upload.add_argument(
+        "-F", "--file", dest="files", action="append", default=None, metavar="RUTA",
+        help="Añade un archivo a la lista de subida (repetible)"
+    )
+    p_upload.add_argument(
         "--zip", metavar="TAMAÑO[/NIVEL]", default=None,
-        help="Fuerza compresión 7z. TAMAÑO acepta K/M/G (ej. 100M, 1G). NIVEL opcional 0-9 (ej. 100M/9)."
+        help="Fuerza compresión 7z. TAMAÑO acepta K/M/G. NIVEL opcional 0-9"
     )
-
-    parser.add_argument(
+    p_upload.add_argument(
         "-T", "--thumb", metavar="RUTA", default=None,
-        help="Miniatura personalizada para documentos (.jpg/.jpeg/.png). "
-             "Telegram puede no mostrarla en ciertos tipos como PDF."
+        help="Miniatura personalizada para documentos (.jpg/.jpeg/.png)"
     )
-
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--video", action="store_true",
-        help="Envía los archivos como video."
-    )
-    mode_group.add_argument(
-        "--image", action="store_true",
-        help="Envía los archivos como foto."
-    )
-    mode_group.add_argument(
-        "--audio", action="store_true",
-        help="Envía los archivos como audio."
-    )
-
-    parser.add_argument(
+    mode_group = p_upload.add_mutually_exclusive_group()
+    mode_group.add_argument("--video", action="store_true", help="Envía como video")
+    mode_group.add_argument("--image", action="store_true", help="Envía como foto")
+    mode_group.add_argument("--audio", action="store_true", help="Envía como audio")
+    p_upload.add_argument(
         "-IB", "--media-batch", dest="media_batch", action="store_true",
-        help="Agrupa imágenes y videos en álbumes de hasta 10 elementos."
+        help="Agrupa imágenes y videos en álbumes de hasta 10 elementos"
     )
 
-    parser.add_argument(
-        "-RC", "--remove_api", action="store_true",
-        help="Elimina credenciales API y archivos de sesión guardados."
+    p_folder = subparsers.add_parser(
+        "folder", aliases=["f"],
+        help="Sube todos los archivos de un directorio",
+        description="Sube todos los archivos de un directorio en orden alfabético.",
+    )
+    p_folder.add_argument("dir", metavar="DIR", help="Directorio a subir")
+    p_folder.add_argument(
+        "--zip", metavar="TAMAÑO[/NIVEL]", default=None,
+        help="Fuerza compresión 7z. TAMAÑO acepta K/M/G. NIVEL opcional 0-9"
+    )
+    p_folder.add_argument(
+        "-T", "--thumb", metavar="RUTA", default=None,
+        help="Miniatura personalizada para documentos (.jpg/.jpeg/.png)"
+    )
+    mode_group_f = p_folder.add_mutually_exclusive_group()
+    mode_group_f.add_argument("--video", action="store_true", help="Envía como video")
+    mode_group_f.add_argument("--image", action="store_true", help="Envía como foto")
+    mode_group_f.add_argument("--audio", action="store_true", help="Envía como audio")
+    p_folder.add_argument(
+        "-IB", "--media-batch", dest="media_batch", action="store_true",
+        help="Agrupa imágenes y videos en álbumes de hasta 10 elementos"
     )
 
-    parser.add_argument(
-        "-P", "--profile", action="store_true",
-        help="Establece la foto de perfil usando la ruta, --folder o -F especificados."
+    p_profile = subparsers.add_parser(
+        "profile", aliases=["p"],
+        help="Establece la foto de perfil",
+        description="Establece la foto de perfil desde archivo(s) o directorio.",
     )
-
-    parser.add_argument(
+    p_profile.add_argument("path", nargs="?", default=None, help="Ruta de la imagen")
+    p_profile.add_argument(
+        "-F", "--file", dest="files", action="append", default=None, metavar="RUTA",
+        help="Añade una imagen a la lista (repetible)"
+    )
+    p_profile.add_argument(
+        "--folder", metavar="DIR", default=None,
+        help="Usa todas las imágenes de este directorio"
+    )
+    p_profile.add_argument(
         "--delay", type=float, default=0.0, metavar="SEG",
-        help="Segundos de espera entre subidas de foto de perfil (por defecto 0)."
+        help="Segundos de espera entre subidas (por defecto 0)"
+    )
+
+    subparsers.add_parser(
+        "server", aliases=["s"],
+        help="Inicia el bot de descarga",
+        description="Inicia el bot de descarga que escucha comandos .dl y .dlg.",
+    )
+
+    subparsers.add_parser(
+        "logout", aliases=["lo"],
+        help="Elimina credenciales API y sesiones guardadas",
+        description="Elimina las credenciales API guardadas y los archivos de sesión.",
     )
 
     args = parser.parse_args()
 
-    if args.remove_api:
+    if not args.command:
+        parser.print_help()
+        return
+
+    if args.command in ("logout", "lo"):
         removed = clear_config()
         print("Credenciales API eliminadas (config.json vaciado).")
         if removed:
@@ -108,7 +136,7 @@ def main():
             print("No se encontraron archivos de sesión.")
         return
 
-    if args.path == "server":
+    if args.command in ("server", "s"):
         try:
             run_server()
         except KeyboardInterrupt:
@@ -122,7 +150,7 @@ def main():
         return
 
     thumb_path = None
-    if args.thumb:
+    if getattr(args, "thumb", None):
         if not os.path.isfile(args.thumb):
             print(f"Error: el archivo de miniatura no existe: {args.thumb}", file=sys.stderr)
             sys.exit(1)
@@ -132,16 +160,16 @@ def main():
             sys.exit(1)
         thumb_path = args.thumb
 
-    sources = []
-    if args.path and args.path != "server":
-        sources.append(args.path)
-    if args.files:
-        sources.extend(args.files)
+    if args.command in ("profile", "p"):
+        sources = []
+        if args.path:
+            sources.append(args.path)
+        if args.files:
+            sources.extend(args.files)
 
-    if args.folder and sources:
-        parser.error("Use --folder o archivos individuales, no ambos.")
+        if args.folder and sources:
+            parser.error("Use --folder o archivos individuales, no ambos.")
 
-    if args.profile:
         if args.folder:
             profile_paths = sorted(
                 os.path.join(args.folder, e)
@@ -190,61 +218,121 @@ def main():
                     print(f"  - {path}: {msg}")
         return
 
-    if not args.folder and not sources:
-        parser.error("Debe proporcionar una ruta, -F/--file o --folder.")
+    if args.command in ("upload", "u"):
+        sources = []
+        if args.path:
+            sources.append(args.path)
+        if args.files:
+            sources.extend(args.files)
 
-    if args.video:
-        mode = "video"
-    elif args.image:
-        mode = "image"
-    elif args.audio:
-        mode = "audio"
-    else:
-        mode = "document"
+        if not sources:
+            parser.error("Debe proporcionar una ruta o -F/--file.")
 
-    zip_option = None
-    if args.zip is not None:
-        try:
-            zip_option = parse_zip_option(args.zip, premium=args.premium)
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    api_id, api_hash = ensure_credentials()
-
-    uploader = None
-    try:
-        uploader = TelegramUploader(
-            api_id, api_hash,
-            premium=args.premium,
-            zip_option=zip_option,
-            thumb_path=thumb_path,
-        )
-        uploader.start()
-        if args.folder:
-            uploader.send_folder(args.folder, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
+        if args.video:
+            mode = "video"
+        elif args.image:
+            mode = "image"
+        elif args.audio:
+            mode = "audio"
         else:
+            mode = "document"
+
+        zip_option = None
+        if args.zip is not None:
+            try:
+                zip_option = parse_zip_option(args.zip, premium=args.premium)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        api_id, api_hash = ensure_credentials()
+
+        uploader = None
+        try:
+            uploader = TelegramUploader(
+                api_id, api_hash,
+                premium=args.premium,
+                zip_option=zip_option,
+                thumb_path=thumb_path,
+            )
+            uploader.start()
             for s in sources:
                 if not os.path.isfile(s):
                     print(f"Error: el archivo no existe: {s}", file=sys.stderr)
                     sys.exit(1)
             uploader.send_files(sources, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
-    except KeyboardInterrupt:
-        print()
-        print("Force Exit (Ctrl+C)")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        if uploader is not None:
-            try:
-                uploader.stop()
-            except Exception:
-                pass
-        os._exit(0)
-    else:
-        if uploader is not None:
-            uploader.stop()
-        if uploader.errors:
+        except KeyboardInterrupt:
             print()
-            print("Errores:")
-            for path, msg in uploader.errors:
-                print(f"  - {path}: {msg}")
+            print("Force Exit (Ctrl+C)")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if uploader is not None:
+                try:
+                    uploader.stop()
+                except Exception:
+                    pass
+            os._exit(0)
+        else:
+            if uploader is not None:
+                uploader.stop()
+            if uploader.errors:
+                print()
+                print("Errores:")
+                for path, msg in uploader.errors:
+                    print(f"  - {path}: {msg}")
+        return
+
+    if args.command in ("folder", "f"):
+        if not os.path.isdir(args.dir):
+            print(f"Error: el directorio no existe: {args.dir}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.video:
+            mode = "video"
+        elif args.image:
+            mode = "image"
+        elif args.audio:
+            mode = "audio"
+        else:
+            mode = "document"
+
+        zip_option = None
+        if args.zip is not None:
+            try:
+                zip_option = parse_zip_option(args.zip, premium=args.premium)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        api_id, api_hash = ensure_credentials()
+
+        uploader = None
+        try:
+            uploader = TelegramUploader(
+                api_id, api_hash,
+                premium=args.premium,
+                zip_option=zip_option,
+                thumb_path=thumb_path,
+            )
+            uploader.start()
+            uploader.send_folder(args.dir, chat_id=args.chat, mode=mode, media_batch=args.media_batch)
+        except KeyboardInterrupt:
+            print()
+            print("Force Exit (Ctrl+C)")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if uploader is not None:
+                try:
+                    uploader.stop()
+                except Exception:
+                    pass
+            os._exit(0)
+        else:
+            if uploader is not None:
+                uploader.stop()
+            if uploader.errors:
+                print()
+                print("Errores:")
+                for path, msg in uploader.errors:
+                    print(f"  - {path}: {msg}")
+        return
