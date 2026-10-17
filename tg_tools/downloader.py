@@ -224,6 +224,26 @@ async def _finalize_reaction(client, message, success):
         pass
 
 
+async def _send_output(client, message, output):
+    if not output:
+        return
+    max_len = 4000
+    if len(output) <= max_len:
+        await client.send_message(
+            chat_id=message.chat.id,
+            text=output,
+            reply_to_message_id=message.id,
+        )
+        return
+    for i in range(0, len(output), max_len):
+        chunk = output[i:i + max_len]
+        await client.send_message(
+            chat_id=message.chat.id,
+            text=chunk,
+            reply_to_message_id=message.id,
+        )
+
+
 def _parse_fs_args(message, command_name):
     text = message.text or message.caption or ""
     prefix = "." + command_name
@@ -414,15 +434,17 @@ async def ls_handler(client: Client, message: Message):
         if not targets:
             print("Error: no matches")
             return
+        output_lines = []
         for target in targets:
             lines = _list_path(target)
             if lines is None:
-                print(f"Error: path not found: {target}")
+                output_lines.append(f"Error: path not found: {target}")
                 continue
-            print(f"Listing: {os.path.abspath(target)}")
-            for line in lines:
-                print(line)
+            output_lines.append(f"Listing: {os.path.abspath(target)}")
+            output_lines.extend(lines)
             success = True
+        if output_lines:
+            await _send_output(client, message, "\n".join(output_lines))
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
     finally:
@@ -577,14 +599,22 @@ async def cmd_handler(client: Client, message: Message):
             capture_output=True,
             text=True,
         )
+        parts = []
         if result.stdout:
-            print(result.stdout, end="")
+            parts.append(result.stdout)
         if result.stderr:
-            print(result.stderr, end="")
-        print(f"Exit code: {result.returncode}")
+            parts.append(result.stderr)
+        parts.append(f"Exit code: {result.returncode}")
+        output = "\n".join(parts).rstrip()
+        print(output)
+        await _send_output(client, message, output)
         success = result.returncode == 0
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
+        try:
+            await _send_output(client, message, f"Error: {str(e)[:150]}")
+        except Exception:
+            pass
     finally:
         await _finalize_reaction(client, message, success)
 
