@@ -3,6 +3,10 @@ from pyrogram.types import Message
 import asyncio
 import os
 import re
+import glob
+import shlex
+import shutil
+import subprocess
 from urllib.parse import urlparse
 from .config import ensure_credentials, SESSION_PATH, ensure_session_dir
 
@@ -220,6 +224,79 @@ async def _finalize_reaction(client, message, success):
         pass
 
 
+def _parse_fs_args(message, command_name):
+    text = message.text or message.caption or ""
+    prefix = "." + command_name
+    if not text.startswith(prefix):
+        return None
+    rest = text[len(prefix):]
+    if rest and not rest[0].isspace():
+        return None
+    return rest.strip()
+
+
+def _split_fs_args(raw):
+    recursive = False
+    tokens = shlex.split(raw)
+    filtered = []
+    for token in tokens:
+        if token == "-r":
+            recursive = True
+        else:
+            filtered.append(token)
+    return filtered, recursive
+
+
+def _expand_glob(token):
+    if any(ch in token for ch in "*?["):
+        matches = sorted(glob.glob(token))
+        return matches
+    return [token]
+
+
+def _expand_tokens(tokens):
+    expanded = []
+    for token in tokens:
+        expanded.extend(_expand_glob(token))
+    return expanded
+
+
+def _list_path(path):
+    if os.path.isfile(path):
+        size = os.path.getsize(path)
+        return [f"{human_size(size):>10}  {os.path.basename(path)}"]
+    if not os.path.isdir(path):
+        return None
+    lines = []
+    try:
+        entries = sorted(os.listdir(path))
+    except OSError as e:
+        return [f"Error: {e}"]
+    for entry in entries:
+        full = os.path.join(path, entry)
+        try:
+            if os.path.isdir(full):
+                lines.append(f"{'<DIR>':>10}  {entry}/")
+            else:
+                size = os.path.getsize(full)
+                lines.append(f"{human_size(size):>10}  {entry}")
+        except OSError:
+            lines.append(f"{'?':>10}  {entry}")
+    if not lines:
+        lines.append("(empty)")
+    return lines
+
+
+def _ensure_parent(dst, recursive):
+    parent = os.path.dirname(dst)
+    if parent and not os.path.isdir(parent):
+        if recursive:
+            os.makedirs(parent, exist_ok=True)
+            return True
+        return False
+    return True
+
+
 @app.on_message(
     (filters.private | filters.group | filters.me)
     & ~filters.channel
@@ -310,6 +387,202 @@ async def download_group_handler(client: Client, message: Message):
 
         success = True
 
+    except Exception as e:
+        print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
+
+
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("ls", prefixes=".")
+)
+async def ls_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
+    try:
+        raw = _parse_fs_args(message, "ls")
+        if raw is None:
+            return
+        try:
+            tokens, _ = _split_fs_args(raw)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+        targets = _expand_tokens(tokens) if tokens else ["."]
+        if not targets:
+            print("Error: no matches")
+            return
+        for target in targets:
+            lines = _list_path(target)
+            if lines is None:
+                print(f"Error: path not found: {target}")
+                continue
+            print(f"Listing: {os.path.abspath(target)}")
+            for line in lines:
+                print(line)
+            success = True
+    except Exception as e:
+        print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
+
+
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("cp", prefixes=".")
+)
+async def cp_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
+    try:
+        raw = _parse_fs_args(message, "cp")
+        if not raw:
+            print("Usage: .cp [-r] SRC... DST")
+            return
+        try:
+            tokens, recursive = _split_fs_args(raw)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+        if len(tokens) < 2:
+            print("Usage: .cp [-r] SRC... DST")
+            return
+        dst = tokens[-1]
+        src_tokens = tokens[:-1]
+        sources = _expand_tokens(src_tokens)
+        if not sources:
+            print("Error: no matches")
+            return
+        dst_is_dir = os.path.isdir(dst) or dst.endswith(os.sep) or dst.endswith("/")
+        if len(sources) > 1:
+            if not dst_is_dir:
+                if recursive:
+                    os.makedirs(dst, exist_ok=True)
+                    dst_is_dir = True
+                else:
+                    print(f"Error: destination must be a directory: {dst}")
+                    return
+        for src in sources:
+            if not os.path.exists(src):
+                print(f"Error: source not found: {src}")
+                continue
+            if dst_is_dir:
+                target = os.path.join(dst, os.path.basename(src.rstrip(os.sep)))
+            else:
+                target = dst
+            if not _ensure_parent(target, recursive):
+                print(f"Error: destination directory not found: {os.path.dirname(target)}")
+                continue
+            try:
+                if os.path.isdir(src):
+                    shutil.copytree(src, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, target)
+                print(f"Copied: {src} -> {target}")
+                success = True
+            except Exception as e:
+                print(f"Error copying {src}: {str(e)[:150]}")
+    except Exception as e:
+        print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
+
+
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("mv", prefixes=".")
+)
+async def mv_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
+    try:
+        raw = _parse_fs_args(message, "mv")
+        if not raw:
+            print("Usage: .mv [-r] SRC... DST")
+            return
+        try:
+            tokens, recursive = _split_fs_args(raw)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+        if len(tokens) < 2:
+            print("Usage: .mv [-r] SRC... DST")
+            return
+        dst = tokens[-1]
+        src_tokens = tokens[:-1]
+        sources = _expand_tokens(src_tokens)
+        if not sources:
+            print("Error: no matches")
+            return
+        dst_is_dir = os.path.isdir(dst) or dst.endswith(os.sep) or dst.endswith("/")
+        if len(sources) > 1:
+            if not dst_is_dir:
+                if recursive:
+                    os.makedirs(dst, exist_ok=True)
+                    dst_is_dir = True
+                else:
+                    print(f"Error: destination must be a directory: {dst}")
+                    return
+        for src in sources:
+            if not os.path.exists(src):
+                print(f"Error: source not found: {src}")
+                continue
+            if dst_is_dir:
+                target = os.path.join(dst, os.path.basename(src.rstrip(os.sep)))
+            else:
+                target = dst
+            if not _ensure_parent(target, recursive):
+                print(f"Error: destination directory not found: {os.path.dirname(target)}")
+                continue
+            try:
+                shutil.move(src, target)
+                print(f"Moved: {src} -> {target}")
+                success = True
+            except Exception as e:
+                print(f"Error moving {src}: {str(e)[:150]}")
+    except Exception as e:
+        print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
+
+
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("cmd", prefixes=".")
+)
+async def cmd_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
+    try:
+        text = message.text or message.caption or ""
+        prefix = ".cmd"
+        if not text.startswith(prefix):
+            return
+        rest = text[len(prefix):]
+        if rest and not rest[0].isspace():
+            return
+        command = rest.strip()
+        if not command:
+            print("Usage: .cmd <command>")
+            return
+        print(f"Executing: {command}")
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
+        print(f"Exit code: {result.returncode}")
+        success = result.returncode == 0
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
     finally:
