@@ -90,6 +90,18 @@ def get_random_thumb(path):
         return None
 
 
+def _thumb_dimensions(path):
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        with Image.open(path) as img:
+            return img.size
+    except Exception:
+        return None
+
+
 def _thumb_is_valid(path):
     try:
         if os.path.getsize(path) > THUMB_MAX_BYTES:
@@ -98,6 +110,12 @@ def _thumb_is_valid(path):
         return False
     ext = os.path.splitext(path)[1].lower()
     if ext not in (".jpg", ".jpeg"):
+        return False
+    dims = _thumb_dimensions(path)
+    if dims is None:
+        return False
+    w, h = dims
+    if w > THUMB_MAX_DIM or h > THUMB_MAX_DIM:
         return False
     return True
 
@@ -112,7 +130,7 @@ def _make_thumb_compatible(path):
         os.close(fd)
         with Image.open(path) as img:
             img = img.convert("RGB")
-            img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))
+            img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM), Image.Resampling.LANCZOS)
             img.save(out, format="JPEG", quality=80)
         if os.path.getsize(out) > THUMB_MAX_BYTES:
             with Image.open(out) as img:
@@ -134,10 +152,13 @@ def _make_thumb_compatible(path):
 
 def prepare_thumb(path):
     if not path or not os.path.isfile(path):
-        return None
+        return None, False
     if _thumb_is_valid(path):
-        return path
-    return _make_thumb_compatible(path)
+        return path, False
+    new_path = _make_thumb_compatible(path)
+    if new_path is None:
+        return None, False
+    return new_path, True
 
 
 def sorted_files(folder):
@@ -209,62 +230,68 @@ class TelegramUploader:
     def _send_one(self, path, chat_id, mode, caption):
         total = os.path.getsize(path)
         print(caption)
-        custom_thumb = self._custom_thumb(mode)
-        generated_thumb = None
-        if custom_thumb:
-            custom_thumb = prepare_thumb(custom_thumb)
-            if custom_thumb and not os.path.isfile(custom_thumb):
-                custom_thumb = None
-        if mode == "video":
-            duration = get_video_duration(path)
-            thumb = get_random_thumb(path)
-            try:
-                self.client.send_video(
+        thumb_to_send = None
+        thumb_is_temp = False
+        raw_thumb = self._custom_thumb(mode)
+        if raw_thumb:
+            thumb_to_send, thumb_is_temp = prepare_thumb(raw_thumb)
+        try:
+            if mode == "video":
+                duration = get_video_duration(path)
+                thumb = get_random_thumb(path)
+                try:
+                    self.client.send_video(
+                        chat_id=chat_id,
+                        video=path,
+                        duration=duration,
+                        thumb=thumb,
+                        caption=caption,
+                        supports_streaming=True,
+                        progress=self._progress,
+                    )
+                finally:
+                    if thumb and os.path.exists(thumb):
+                        try:
+                            os.remove(thumb)
+                        except OSError:
+                            pass
+            elif mode == "image":
+                self.client.send_photo(
                     chat_id=chat_id,
-                    video=path,
-                    duration=duration,
-                    thumb=thumb,
+                    photo=path,
                     caption=caption,
-                    supports_streaming=True,
                     progress=self._progress,
                 )
-            finally:
-                if thumb and os.path.exists(thumb):
-                    try:
-                        os.remove(thumb)
-                    except OSError:
-                        pass
-        elif mode == "image":
-            self.client.send_photo(
-                chat_id=chat_id,
-                photo=path,
-                caption=caption,
-                progress=self._progress,
-            )
-        elif mode == "audio":
-            duration, performer, title = get_audio_metadata(path)
-            kwargs = {
-                "chat_id": chat_id,
-                "audio": path,
-                "caption": caption,
-                "duration": duration,
-                "performer": performer,
-                "title": title,
-                "progress": self._progress,
-            }
-            if custom_thumb:
-                kwargs["thumb"] = custom_thumb
-            self.client.send_audio(**kwargs)
-        else:
-            kwargs = {
-                "chat_id": chat_id,
-                "document": path,
-                "caption": caption,
-                "progress": self._progress,
-            }
-            if custom_thumb:
-                kwargs["thumb"] = custom_thumb
-            self.client.send_document(**kwargs)
+            elif mode == "audio":
+                duration, performer, title = get_audio_metadata(path)
+                kwargs = {
+                    "chat_id": chat_id,
+                    "audio": path,
+                    "caption": caption,
+                    "duration": duration,
+                    "performer": performer,
+                    "title": title,
+                    "progress": self._progress,
+                }
+                if thumb_to_send:
+                    kwargs["thumb"] = thumb_to_send
+                self.client.send_audio(**kwargs)
+            else:
+                kwargs = {
+                    "chat_id": chat_id,
+                    "document": path,
+                    "caption": caption,
+                    "progress": self._progress,
+                }
+                if thumb_to_send:
+                    kwargs["thumb"] = thumb_to_send
+                self.client.send_document(**kwargs)
+        finally:
+            if thumb_is_temp and thumb_to_send and os.path.exists(thumb_to_send):
+                try:
+                    os.remove(thumb_to_send)
+                except OSError:
+                    pass
         self._done(total)
 
     def _send_media_batch(self, paths, chat_id, caption=None):
