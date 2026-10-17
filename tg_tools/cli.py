@@ -20,8 +20,8 @@ def main():
                "  tg-tool upload archivo.zip\n"
                "  tg-tool upload -F a.mp4 -F b.mp4 --video\n"
                "  tg-tool folder ./fotos -IB\n"
-               "  tg-tool upload archivo.pdf -T preview.jpg --chat @miusuario\n"
-               "  tg-tool profile -P ./avatar.png\n"
+               "  tg-tool upload -T preview.jpg a.pdf b.zip c.doc\n"
+               "  tg-tool profile ./avatar.png\n"
                "  tg-tool server\n"
                "  tg-tool logout",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -41,9 +41,10 @@ def main():
     p_upload = subparsers.add_parser(
         "upload", aliases=["u"],
         help="Sube uno o varios archivos",
-        description="Sube archivos individuales. Usa -F repetidamente para varios.",
+        description="Sube archivos individuales. Puedes pasar varias rutas como argumentos posicionales.",
     )
-    p_upload.add_argument("path", nargs="?", default=None, help="Ruta del archivo a subir")
+    p_upload.add_argument("paths", nargs="*", default=None, metavar="RUTA",
+                          help="Rutas de archivos a subir (una o varias)")
     p_upload.add_argument(
         "-F", "--file", dest="files", action="append", default=None, metavar="RUTA",
         help="Añade un archivo a la lista de subida (repetible)"
@@ -93,7 +94,8 @@ def main():
         help="Establece la foto de perfil",
         description="Establece la foto de perfil desde archivo(s) o directorio.",
     )
-    p_profile.add_argument("path", nargs="?", default=None, help="Ruta de la imagen")
+    p_profile.add_argument("paths", nargs="*", default=None, metavar="RUTA",
+                           help="Rutas de imágenes (una o varias)")
     p_profile.add_argument(
         "-F", "--file", dest="files", action="append", default=None, metavar="RUTA",
         help="Añade una imagen a la lista (repetible)"
@@ -162,8 +164,8 @@ def main():
 
     if args.command in ("profile", "p"):
         sources = []
-        if args.path:
-            sources.append(args.path)
+        if args.paths:
+            sources.extend(args.paths)
         if args.files:
             sources.extend(args.files)
 
@@ -220,13 +222,13 @@ def main():
 
     if args.command in ("upload", "u"):
         sources = []
-        if args.path:
-            sources.append(args.path)
+        if args.paths:
+            sources.extend(args.paths)
         if args.files:
             sources.extend(args.files)
 
         if not sources:
-            parser.error("Debe proporcionar una ruta o -F/--file.")
+            parser.error("Debe proporcionar al menos una ruta o -F/--file.")
 
         if args.video:
             mode = "video"
