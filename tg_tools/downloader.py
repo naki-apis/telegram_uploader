@@ -89,6 +89,8 @@ def get_media_filename(msg):
 
 
 async def resolve_source(message, command_name):
+    if not message.command:
+        return None, None, None
     args = " ".join(message.command[1:]).strip()
     source_chat_id = None
     msg_id = None
@@ -97,7 +99,6 @@ async def resolve_source(message, command_name):
     if args.startswith("https://t.me/"):
         source_chat_id, msg_id = parse_telegram_url(args)
         if not source_chat_id or not msg_id:
-            print("Error: invalid URL")
             return None, None, None
     elif len(message.command) == 2 and message.reply_to_message:
         source_chat_id = message.chat.id
@@ -118,7 +119,6 @@ async def resolve_source(message, command_name):
         try:
             msg_id = int(message.command[2])
         except ValueError:
-            print("Error: invalid msg_id")
             return None, None, None
         if chat_input.startswith("@"):
             source_chat_id = chat_input
@@ -130,7 +130,6 @@ async def resolve_source(message, command_name):
                     chat = await message._client.get_chat(chat_input)
                     source_chat_id = chat.id
                 except Exception:
-                    print(f"Error: chat not found: {chat_input}")
                     return None, None, None
     else:
         print(f"Usage: {command_name} (reply), {command_name} name.ext (reply), {command_name} https://t.me/user/123, {command_name} @user 123 or {command_name} -100123 456")
@@ -174,8 +173,44 @@ async def resolve_chat(client, source_chat_id):
     return source_chat_id
 
 
-@app.on_message(filters.private or filters.bot or filters.me & filters.command("dl", prefixes="."))
+async def _react(client, message, emoji):
+    try:
+        await client.send_reaction(
+            chat_id=message.chat.id,
+            message_id=message.id,
+            emoji=emoji,
+        )
+    except Exception:
+        pass
+
+
+async def _finalize_reaction(client, message, success):
+    try:
+        await client.send_reaction(
+            chat_id=message.chat.id,
+            message_id=message.id,
+            emoji="",
+        )
+    except Exception:
+        pass
+    try:
+        await client.send_reaction(
+            chat_id=message.chat.id,
+            message_id=message.id,
+            emoji="👍" if success else "👎",
+        )
+    except Exception:
+        pass
+
+
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("dl", prefixes=".")
+)
 async def download_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
     try:
         source_chat_id, msg_id, custom_name = await resolve_source(message, ".dl")
         if source_chat_id is None or msg_id is None:
@@ -190,21 +225,28 @@ async def download_handler(client: Client, message: Message):
             return
 
         if not target_msg or target_msg.empty:
-            print("Error: message not found")
             return
 
         if not target_msg.media:
-            print("Error: no downloadable media in message")
             return
 
         await download_single(client, target_msg, custom_name)
+        success = True
 
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
 
 
-@app.on_message(filters.private or filters.bot or filters.me & filters.command("dlg", prefixes="."))
+@app.on_message(
+    (filters.private | filters.group | filters.me)
+    & ~filters.channel
+    & filters.command("dlg", prefixes=".")
+)
 async def download_group_handler(client: Client, message: Message):
+    await _react(client, message, "🤔")
+    success = False
     try:
         source_chat_id, msg_id, custom_name = await resolve_source(message, ".dlg")
         if source_chat_id is None or msg_id is None:
@@ -219,16 +261,14 @@ async def download_group_handler(client: Client, message: Message):
             return
 
         if not target_msg or target_msg.empty:
-            print("Error: message not found")
             return
 
         if not target_msg.media:
-            print("Error: no downloadable media in message")
             return
 
         if not target_msg.media_group_id:
-            print("Info: message is not part of a media group, downloading single")
             await download_single(client, target_msg, custom_name)
+            success = True
             return
 
         try:
@@ -237,7 +277,6 @@ async def download_group_handler(client: Client, message: Message):
             print(f"Error: could not fetch media group: {str(e)[:150]}")
             return
 
-        print(f"Media group detected: {len(media_group)} items")
         for idx, single_msg in enumerate(media_group, start=1):
             if not single_msg.media:
                 continue
@@ -252,8 +291,12 @@ async def download_group_handler(client: Client, message: Message):
             except Exception as e:
                 print(f"Error downloading item {idx}: {str(e)[:150]}")
 
+        success = True
+
     except Exception as e:
         print(f"Error: {str(e)[:150]}")
+    finally:
+        await _finalize_reaction(client, message, success)
 
 
 def _silence_peer_errors(loop, context):
@@ -267,7 +310,7 @@ async def _main():
     loop = asyncio.get_event_loop()
     loop.set_exception_handler(_silence_peer_errors)
     await app.start()
-    print("Bot started (download mode, Saved Messages only)")
+    print("Bot started (download mode)")
     await asyncio.Future()
 
 
